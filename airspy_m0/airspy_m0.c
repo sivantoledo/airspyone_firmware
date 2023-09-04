@@ -74,6 +74,8 @@ uint8_t* const usb_bulk_buffer = (uint8_t*)0x20004000;
 
 const char version_string[] = " " AIRSPY_FW_GIT_TAG " " AIRSPY_FW_CHECKIN_DATE;
 
+static volatile uint8_t add_seq_num = 0;
+
 typedef struct {
   uint32_t freq_hz;
 } set_freq_params_t;
@@ -100,6 +102,12 @@ __attribute__ ((always_inline)) static inline void start_stop_adchs_m4(uint8_t c
     if(start_adchs->raw == 0)
       break;
   }
+}
+
+// If seq_num is enabled, adding flag and sequence number to each packet
+void set_seq_num(uint8_t state)
+{
+	add_seq_num = state;
 }
 
 void set_samplerate_m4(uint8_t conf_num)
@@ -186,6 +194,33 @@ void m4core_isr(void)
   MASTER_TXEV_QUIT();
 }
 
+static const uint32_t flag = 0xDEADBEEF;
+
+ /* The last byte in every word is not used (in case of not-packing), we use it
+ * in order to pass the sequence number.
+ *
+ * @param buff - Start of the buffer (used on the bulk buffer only) to insert
+ * 				 the seq_num value into.
+ * @param seq_num - The sequence number of this bulk packet.
+ */
+static void insert_seq_num_not_packed(uint8_t* buff, uint32_t seq_num) {
+	uint32_t temp_flag = flag;
+	uint32_t MS4B_mask = 0xF0000000;
+	uint32_t shift_to_place = (6*4);
+
+	// Inserting seq_num
+	for (int i = 0; i < 8; ++i) {
+		buff[(i * 2) + 1] |= ((uint8_t)(seq_num & 0x0000000F) << 4);
+		seq_num >>= 4;
+	}
+
+	for (int i=8; i < 16; i++) // Inserting flag
+	{
+		buff[(i * 2) + 1]  |= (temp_flag & MS4B_mask) >> shift_to_place;
+		temp_flag <<= 4;
+	}
+}
+
 /*
 M0 Core Manage USB 
 */
@@ -229,6 +264,8 @@ int main(void)
 
   usb_run(&usb_device);
 
+  uint32_t seq_num = 0;
+
   while(true)
   {
     signal_wfe();
@@ -236,10 +273,29 @@ int main(void)
     uint32_t offset = get_usb_buffer_offset();
     uint32_t length = get_usb_buffer_length();
 
-    if(offset != *last_offset_m0)
+    if (offset != *last_offset_m0)
     {
-      usb_transfer_schedule_block(&usb_endpoint_bulk_in, &usb_bulk_buffer[offset], length);
-      *last_offset_m0 = offset;
+    	if (add_seq_num != 0) {
+    		if (length == 0x4000) // Not packed
+    		{
+				insert_seq_num_not_packed(&usb_bulk_buffer[offset], seq_num);
+			}
+			else if (length == 0x1800)
+			{
+				memcpy(&usb_bulk_buffer[offset + length], &seq_num, sizeof(seq_num));
+				length += 4;
+
+				memcpy(&usb_bulk_buffer[offset + length], &flag, sizeof(flag));
+				length += 4;
+
+				length = 0x2000;
+			}
+
+    		seq_num++;
+    	}
+
+    	usb_transfer_schedule_block(&usb_endpoint_bulk_in, &usb_bulk_buffer[offset], length);
+    	*last_offset_m0 = offset;
     }
   }
 }
