@@ -52,7 +52,7 @@ airspy_nos_conf_t __attribute__ ((section(".nocopy_data"))) airspy_nos_conf =
     /* version_conf_t conf_hw = */
     {
       HW_TYPE_AIRSPY_NOS,
-      "AirSpy NOS"
+      "seq AirSpy NOS"
     },
 
     /* i2c_conf_t i2c_conf = */
